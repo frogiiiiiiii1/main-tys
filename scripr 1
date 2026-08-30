@@ -1,0 +1,1275 @@
+local UserInputService = game:GetService("UserInputService")
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Lighting = game:GetService("Lighting")
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+-- ==================== ПОЛЕЗНЫЕ ФУНКЦИИ ====================
+local fullbrightEnabled = false
+local fullbrightConnection = nil
+
+local function enableFullbright()
+    if fullbrightConnection then return end
+    fullbrightConnection = task.spawn(function()
+        while fullbrightEnabled do
+            pcall(function()
+                Lighting.Brightness = 2
+                Lighting.ClockTime = 14
+                Lighting.FogEnd = 100000
+                Lighting.GlobalShadows = false
+                Lighting.Ambient = Color3.fromRGB(178, 178, 178)
+                Lighting.OutdoorAmbient = Color3.fromRGB(178, 178, 178)
+                Lighting.ColorShift_Bottom = Color3.fromRGB(0, 0, 0)
+                Lighting.ColorShift_Top = Color3.fromRGB(0, 0, 0)
+            end)
+            task.wait(0.2)
+        end
+        fullbrightConnection = nil
+    end)
+end
+
+local function disableFullbright()
+    fullbrightEnabled = false
+end
+
+local function tp(target)
+    if not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then return end
+    local hrp = player.Character.HumanoidRootPart
+    local targetPos
+    if typeof(target) == "Vector3" then targetPos = target
+    elseif typeof(target) == "Instance" then
+        if target:IsA("Model") then targetPos = target.PrimaryPart and target.PrimaryPart.Position or target:GetPivot().Position
+        elseif target:IsA("BasePart") then targetPos = target.Position end
+    end
+    if targetPos then hrp.CFrame = CFrame.new(targetPos + Vector3.new(0, 4, 0)) end
+end
+
+local mineCoords = Vector3.new(-1860.14, 4.95, -194.28)
+
+local function teleportToStore(storeName)
+    local store = workspace:FindFirstChild(storeName)
+    if store then tp(store) end
+end
+
+-- Общие сохранённые позиции
+local savedPosition1 = nil
+local savedPosition2 = nil
+
+-- ==================== ESP ====================
+local oreAdornments = {}
+local espSettings = { Enabled = false, Tracers = false, MaxDistance = 1000 }
+
+local ORE_NAMES = {
+    "CubicBlockMetal",
+    "CrystallineMetalOre",
+    "OreMesh",
+    "GemBlockMesh",
+    "ShaleMetalBlock",
+}
+
+local oreStates = {}
+for _, name in ipairs(ORE_NAMES) do
+    oreStates[name] = true
+end
+
+local function isValuableOre(part)
+    return oreStates[part.Name] == true
+end
+
+local function removeOreESP(part)
+    local d = oreAdornments[part]
+    if not d then return end
+    if d.highlight then d.highlight:Destroy() end
+    if d.attachment then d.attachment:Destroy() end
+    if d.beam then d.beam:Destroy() end
+    if d.connections then
+        for _, c in ipairs(d.connections) do c:Disconnect() end
+    end
+    oreAdornments[part] = nil
+end
+
+local function addOreESP(part)
+    if not part:IsA("BasePart") or oreAdornments[part] or not isValuableOre(part) then return end
+
+    local highlight = Instance.new("Highlight")
+    highlight.Adornee = part
+    highlight.FillColor = part.Color
+    highlight.OutlineColor = part.Color
+    highlight.FillTransparency = 0.6
+    highlight.OutlineTransparency = 0.3
+    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    highlight.Enabled = espSettings.Enabled
+    highlight.Parent = part
+
+    local att = Instance.new("Attachment", part)
+
+    local conns = {}
+    table.insert(conns, part.Destroying:Connect(function() removeOreESP(part) end))
+    table.insert(conns, part.AncestryChanged:Connect(function(_, p)
+        if not p or not part:IsDescendantOf(workspace) then removeOreESP(part) end
+    end))
+    table.insert(conns, part:GetPropertyChangedSignal("Transparency"):Connect(function()
+        if part.Transparency >= 1 then removeOreESP(part) end
+    end))
+
+    oreAdornments[part] = {
+        highlight = highlight,
+        attachment = att,
+        beam = nil,
+        connections = conns
+    }
+end
+
+-- Цикл обновления ESP
+task.spawn(function()
+    while task.wait(0.3) do
+        local char = player.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+
+        if espSettings.Enabled and hrp then
+            local placed = workspace:FindFirstChild("PlacedOre")
+            if placed then
+                for _, part in ipairs(placed:GetDescendants()) do
+                    if part:IsA("BasePart") and not oreAdornments[part] and part.Transparency < 1 then
+                        addOreESP(part)
+                    end
+                end
+            end
+
+            for part, data in pairs(oreAdornments) do
+                if part and part.Parent and part:IsDescendantOf(workspace) and part.Transparency < 1 then
+                    if not isValuableOre(part) then
+                        removeOreESP(part)
+                        continue
+                    end
+
+                    local dist = (hrp.Position - part.Position).Magnitude
+                    local inRange = dist <= espSettings.MaxDistance
+
+                    data.highlight.Enabled = inRange
+
+                    if espSettings.Tracers and inRange then
+                        if not data.beam then
+                            local myAtt = hrp:FindFirstChild("RootAttachment") or hrp:FindFirstChildWhichIsA("Attachment")
+                            if myAtt then
+                                local beam = Instance.new("Beam")
+                                beam.Attachment0 = myAtt
+                                beam.Attachment1 = data.attachment
+                                beam.Color = ColorSequence.new(part.Color)
+                                beam.Width0 = 0.04
+                                beam.Width1 = 0.04
+                                beam.FaceCamera = true
+                                beam.Parent = hrp
+                                data.beam = beam
+                            end
+                        end
+                    else
+                        if data.beam then data.beam:Destroy(); data.beam = nil end
+                    end
+                else
+                    removeOreESP(part)
+                end
+            end
+        else
+            for part, _ in pairs(oreAdornments) do
+                removeOreESP(part)
+            end
+        end
+    end
+end)
+
+-- ==================== ТЕМЫ ====================
+local Themes = {
+    Default = {Bg=Color3.fromRGB(30,30,30), Sidebar=Color3.fromRGB(25,25,25), Element=Color3.fromRGB(55,55,55), ElementHover=Color3.fromRGB(70,70,70),
+               Text=Color3.fromRGB(255,255,255), Subtext=Color3.fromRGB(200,200,200), Accent=Color3.fromRGB(90,130,255), Border=Color3.fromRGB(45,45,45)},
+    Midnight = {Bg=Color3.fromRGB(10,15,30), Sidebar=Color3.fromRGB(5,10,20), Element=Color3.fromRGB(15,25,45), ElementHover=Color3.fromRGB(25,35,55),
+               Text=Color3.fromRGB(255,255,255), Subtext=Color3.fromRGB(150,160,200), Accent=Color3.fromRGB(50,100,255), Border=Color3.fromRGB(30,40,60)},
+    Crimson = {Bg=Color3.fromRGB(30,10,10), Sidebar=Color3.fromRGB(20,5,5), Element=Color3.fromRGB(45,15,15), ElementHover=Color3.fromRGB(55,25,25),
+               Text=Color3.fromRGB(255,255,255), Subtext=Color3.fromRGB(200,150,150), Accent=Color3.fromRGB(255,50,50), Border=Color3.fromRGB(60,30,30)},
+    Forest = {Bg=Color3.fromRGB(10,30,15), Sidebar=Color3.fromRGB(5,20,10), Element=Color3.fromRGB(15,45,20), ElementHover=Color3.fromRGB(25,55,30),
+               Text=Color3.fromRGB(255,255,255), Subtext=Color3.fromRGB(150,200,160), Accent=Color3.fromRGB(50,255,100), Border=Color3.fromRGB(30,60,40)},
+    Amethyst = {Bg=Color3.fromRGB(30,10,35), Sidebar=Color3.fromRGB(20,5,25), Element=Color3.fromRGB(45,15,50), ElementHover=Color3.fromRGB(55,25,60),
+               Text=Color3.fromRGB(255,255,255), Subtext=Color3.fromRGB(200,150,210), Accent=Color3.fromRGB(200,100,255), Border=Color3.fromRGB(60,30,65)},
+    Onyx = {Bg=Color3.fromRGB(2,2,2), Sidebar=Color3.fromRGB(0,0,0), Element=Color3.fromRGB(10,10,10), ElementHover=Color3.fromRGB(20,20,20),
+               Text=Color3.fromRGB(255,255,255), Subtext=Color3.fromRGB(130,130,130), Accent=Color3.fromRGB(90,90,90), Border=Color3.fromRGB(25,25,25)},
+    Candy = {Bg=Color3.fromRGB(178,213,229), Sidebar=Color3.fromRGB(150,185,210), Element=Color3.fromRGB(200,225,240), ElementHover=Color3.fromRGB(220,235,250),
+               Text=Color3.fromRGB(30,30,30), Subtext=Color3.fromRGB(70,70,70), Accent=Color3.fromRGB(255,255,255), Border=Color3.fromRGB(140,170,190)},
+}
+
+local CurrentTheme = Themes.Default
+local UI_Elements = {}
+local UI_Strokes = {}
+local UI_Texts = {}
+local UI_AccentButtons = {}
+
+local function applyTheme(themeName)
+    local t = Themes[themeName]
+    if not t then return end
+    CurrentTheme = t
+
+    mainFrame.BackgroundColor3 = t.Bg
+    tabContainer.BackgroundColor3 = t.Sidebar
+    titleBar.BackgroundColor3 = t.Element
+
+    for _, element in ipairs(UI_Elements) do
+        if element and element.Parent then
+            if element:IsA("Frame") or element:IsA("TextButton") then
+                element.BackgroundColor3 = t.Element
+            end
+        end
+    end
+    for _, stroke in ipairs(UI_Strokes) do
+        if stroke and stroke.Parent then stroke.Color = t.Border end
+    end
+    for _, textElement in ipairs(UI_Texts) do
+        if textElement and textElement.Parent then
+            if textElement:IsA("TextLabel") or textElement:IsA("TextButton") then
+                textElement.TextColor3 = t.Text
+            end
+        end
+    end
+    for _, btn in ipairs(UI_AccentButtons) do
+        if btn and btn.Parent and btn:GetAttribute("Active") then
+            btn.BackgroundColor3 = t.Accent
+            btn.TextColor3 = t.Text
+        end
+    end
+end
+
+-- ==================== GUI ====================
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "CheatMenu"
+screenGui.ResetOnSpawn = false
+screenGui.Parent = playerGui
+
+local mainFrame = Instance.new("Frame")
+mainFrame.Name = "MainFrame"
+mainFrame.Size = UDim2.new(0, 600, 0, 450)
+mainFrame.Position = UDim2.new(0.5, -300, 0.5, -225)
+mainFrame.BackgroundColor3 = CurrentTheme.Bg
+mainFrame.BorderSizePixel = 0
+mainFrame.Active = true
+mainFrame.Visible = false
+mainFrame.Parent = screenGui
+Instance.new("UICorner", mainFrame).CornerRadius = UDim.new(0, 10)
+
+local shadow = Instance.new("Frame")
+shadow.Size = UDim2.new(1, 6, 1, 6)
+shadow.Position = UDim2.new(0, -3, 0, -3)
+shadow.BackgroundColor3 = Color3.fromRGB(0,0,0)
+shadow.BackgroundTransparency = 0.5
+shadow.BorderSizePixel = 0
+shadow.ZIndex = mainFrame.ZIndex-1
+shadow.Parent = mainFrame
+Instance.new("UICorner", shadow).CornerRadius = UDim.new(0, 10)
+
+-- Title bar
+local titleBar = Instance.new("Frame")
+titleBar.Size = UDim2.new(1, 0, 0, 40)
+titleBar.BackgroundColor3 = CurrentTheme.Element
+titleBar.BorderSizePixel = 0
+titleBar.Parent = mainFrame
+Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 10)
+
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Size = UDim2.new(1, -50, 1, 0)
+titleLabel.Position = UDim2.new(0, 15, 0, 0)
+titleLabel.BackgroundTransparency = 1
+titleLabel.Text = "GootHub"
+titleLabel.TextColor3 = CurrentTheme.Text
+titleLabel.Font = Enum.Font.GothamBold
+titleLabel.TextSize = 18
+titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+titleLabel.Parent = titleBar
+table.insert(UI_Texts, titleLabel)
+
+local closeButton = Instance.new("TextButton")
+closeButton.Size = UDim2.new(0, 28, 0, 28)
+closeButton.Position = UDim2.new(1, -34, 0, 6)
+closeButton.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+closeButton.Text = "✕"
+closeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+closeButton.Font = Enum.Font.GothamBold
+closeButton.TextSize = 14
+closeButton.BorderSizePixel = 0
+closeButton.Parent = titleBar
+Instance.new("UICorner", closeButton).CornerRadius = UDim.new(0, 6)
+closeButton.MouseButton1Click:Connect(function() mainFrame.Visible = false end)
+
+-- Drag setup
+local dragging = false
+local dragStart = Vector2.new()
+local startPos = UDim2.new()
+titleBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = mainFrame.Position
+    end
+end)
+
+-- ==================== TABS ====================
+local tabs = {"Main", "ESP", "Teleport", "Binds", "Settings"}
+local tabButtons = {}
+local tabContents = {}
+
+local tabContainer = Instance.new("Frame")
+tabContainer.Size = UDim2.new(1, 0, 0, 38)
+tabContainer.Position = UDim2.new(0, 0, 0, 42)
+tabContainer.BackgroundColor3 = CurrentTheme.Sidebar
+tabContainer.BorderSizePixel = 0
+tabContainer.Parent = mainFrame
+
+local contentFrame = Instance.new("Frame")
+contentFrame.Size = UDim2.new(1, -20, 1, -90)
+contentFrame.Position = UDim2.new(0, 10, 0, 84)
+contentFrame.BackgroundTransparency = 1
+contentFrame.Parent = mainFrame
+
+for i, tabName in ipairs(tabs) do
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0.2, -2, 1, 0)
+    btn.Position = UDim2.new((i-1)*0.2, 0, 0, 0)
+    btn.BackgroundColor3 = CurrentTheme.Element
+    btn.Text = tabName
+    btn.TextColor3 = CurrentTheme.Subtext
+    btn.Font = Enum.Font.GothamSemibold
+    btn.TextSize = 14
+    btn.BorderSizePixel = 0
+    btn.Parent = tabContainer
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 4)
+    table.insert(UI_Elements, btn)
+    table.insert(UI_Texts, btn)
+    table.insert(UI_AccentButtons, btn)
+
+    local tabContent = Instance.new("Frame")
+    tabContent.Size = UDim2.new(1, 0, 1, 0)
+    tabContent.BackgroundTransparency = 1
+    tabContent.Visible = false
+
+    if tabName ~= "Main" then
+        local sf = Instance.new("ScrollingFrame")
+        sf.Size = UDim2.new(1, 0, 1, 0)
+        sf.BackgroundTransparency = 1
+        sf.ScrollBarThickness = 4
+        sf.ScrollBarImageColor3 = CurrentTheme.Accent
+        sf.AutomaticCanvasSize = Enum.AutomaticSize.Y
+        sf.CanvasSize = UDim2.new(0,0,0,0)
+        local layout = Instance.new("UIListLayout", sf)
+        layout.Padding = UDim.new(0,8)
+        layout.SortOrder = Enum.SortOrder.LayoutOrder
+        local pad = Instance.new("UIPadding", sf)
+        pad.PaddingLeft = UDim.new(0,5); pad.PaddingRight = UDim.new(0,5); pad.PaddingTop = UDim.new(0,5)
+        tabContent:Destroy()
+        tabContent = sf
+    end
+    tabContent.Parent = contentFrame
+
+    tabContents[tabName] = tabContent
+    tabButtons[tabName] = btn
+
+    btn.MouseButton1Click:Connect(function()
+        for _, b in pairs(tabButtons) do
+            b:SetAttribute("Active", false)
+            b.BackgroundColor3 = CurrentTheme.Element
+            b.TextColor3 = CurrentTheme.Subtext
+        end
+        btn:SetAttribute("Active", true)
+        btn.BackgroundColor3 = CurrentTheme.Accent
+        btn.TextColor3 = CurrentTheme.Text
+        for _, c in pairs(tabContents) do c.Visible = false end
+        tabContent.Visible = true
+    end)
+end
+
+tabButtons["Main"]:SetAttribute("Active", true)
+tabButtons["Main"].BackgroundColor3 = CurrentTheme.Accent
+tabButtons["Main"].TextColor3 = CurrentTheme.Text
+tabContents["Main"].Visible = true
+
+-- ===================== MAIN TAB =====================
+local mainLabel = Instance.new("TextLabel")
+mainLabel.Size = UDim2.new(1,0,0,30)
+mainLabel.BackgroundTransparency = 1
+mainLabel.Text = "Main Features"
+mainLabel.TextColor3 = CurrentTheme.Text
+mainLabel.Font = Enum.Font.GothamBold
+mainLabel.TextSize = 20
+mainLabel.Parent = tabContents["Main"]
+table.insert(UI_Texts, mainLabel)
+
+-- Speed Hack
+local speedHackEnabled = false
+local speedValue = 50
+
+local speedLabel = Instance.new("TextLabel")
+speedLabel.Size = UDim2.new(1,0,0,20)
+speedLabel.Position = UDim2.new(0,0,0,40)
+speedLabel.BackgroundTransparency = 1
+speedLabel.Text = "Speed Hack: OFF | 50"
+speedLabel.TextColor3 = CurrentTheme.Subtext
+speedLabel.Font = Enum.Font.Gotham
+speedLabel.TextSize = 14
+speedLabel.TextXAlignment = Enum.TextXAlignment.Left
+speedLabel.Parent = tabContents["Main"]
+table.insert(UI_Texts, speedLabel)
+
+local speedToggle = Instance.new("TextButton")
+speedToggle.Size = UDim2.new(0.3,0,0,30)
+speedToggle.Position = UDim2.new(0,0,0,65)
+speedToggle.BackgroundColor3 = Color3.fromRGB(80,80,80)
+speedToggle.Text = "OFF"
+speedToggle.TextColor3 = Color3.fromRGB(255,255,255)
+speedToggle.Font = Enum.Font.GothamBold
+speedToggle.TextSize = 14
+speedToggle.BorderSizePixel = 0
+speedToggle.Parent = tabContents["Main"]
+Instance.new("UICorner", speedToggle).CornerRadius = UDim.new(0,6)
+
+local speedSliderBg = Instance.new("Frame")
+speedSliderBg.Size = UDim2.new(0.6,0,0,20)
+speedSliderBg.Position = UDim2.new(0.35,0,0,70)
+speedSliderBg.BackgroundColor3 = Color3.fromRGB(55,55,55)
+speedSliderBg.BorderSizePixel = 0
+speedSliderBg.Parent = tabContents["Main"]
+Instance.new("UICorner", speedSliderBg).CornerRadius = UDim.new(0,6)
+
+local speedSliderFill = Instance.new("Frame")
+speedSliderFill.Size = UDim2.new(0,0,1,0)
+speedSliderFill.BackgroundColor3 = CurrentTheme.Accent
+speedSliderFill.BorderSizePixel = 0
+speedSliderFill.Parent = speedSliderBg
+Instance.new("UICorner", speedSliderFill).CornerRadius = UDim.new(0,6)
+
+local speedSliderKnob = Instance.new("TextButton")
+speedSliderKnob.Size = UDim2.new(0,20,0,26)
+speedSliderKnob.Position = UDim2.new(0,0,0,-3)
+speedSliderKnob.BackgroundColor3 = Color3.fromRGB(200,200,200)
+speedSliderKnob.Text = ""
+speedSliderKnob.BorderSizePixel = 0
+speedSliderKnob.Parent = speedSliderBg
+Instance.new("UICorner", speedSliderKnob).CornerRadius = UDim.new(0,6)
+
+local function updateSpeedSliderDisplay()
+    local fraction = (speedValue-16)/(200-16)
+    speedSliderFill.Size = UDim2.new(fraction,0,1,0)
+    spawn(function() speedSliderKnob.Position = UDim2.new(0,(speedSliderBg.AbsoluteSize.X-20)*fraction,0,-3) end)
+    speedLabel.Text = "Speed Hack: "..(speedHackEnabled and "ON" or "OFF").." | "..speedValue
+end
+
+local function applySpeed()
+    local char = player.Character
+    if char and char:FindFirstChild("Humanoid") then char.Humanoid.WalkSpeed = speedHackEnabled and speedValue or 16 end
+end
+
+speedToggle.MouseButton1Click:Connect(function()
+    speedHackEnabled = not speedHackEnabled
+    speedToggle.Text = speedHackEnabled and "ON" or "OFF"
+    speedToggle.BackgroundColor3 = speedHackEnabled and Color3.fromRGB(90,180,90) or Color3.fromRGB(80,80,80)
+    updateSpeedSliderDisplay()
+    applySpeed()
+end)
+
+updateSpeedSliderDisplay()
+
+-- Fly
+local flyEnabled = false
+local flySpeed = 50
+local flyBodyGyro, flyBodyVelocity, flyBodyForce, flyConnection
+
+local function startFly()
+    local char = player.Character
+    if not char or not char:FindFirstChild("HumanoidRootPart") then return end
+    local root = char.HumanoidRootPart
+    local hum = char:FindFirstChild("Humanoid")
+    if hum then hum.PlatformStand = true end
+
+    flyBodyGyro = Instance.new("BodyGyro")
+    flyBodyGyro.MaxTorque = Vector3.new(400000,400000,400000)
+    flyBodyGyro.P = 5000; flyBodyGyro.D = 500
+    flyBodyGyro.Parent = root
+
+    flyBodyVelocity = Instance.new("BodyVelocity")
+    flyBodyVelocity.MaxForce = Vector3.new(400000,400000,400000)
+    flyBodyVelocity.Velocity = Vector3.zero
+    flyBodyVelocity.Parent = root
+
+    flyBodyForce = Instance.new("BodyForce")
+    flyBodyForce.Force = Vector3.new(0, workspace.Gravity * root:GetMass(), 0)
+    flyBodyForce.Parent = root
+
+    flyConnection = RunService.Stepped:Connect(function()
+        if not flyEnabled or not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then return end
+        local rootNow = player.Character.HumanoidRootPart
+        local cam = workspace.CurrentCamera
+        if not cam then return end
+        local moveDir = Vector3.zero
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then moveDir += cam.CFrame.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then moveDir -= cam.CFrame.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then moveDir -= cam.CFrame.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then moveDir += cam.CFrame.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then moveDir += Vector3.new(0,1,0) end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then moveDir += Vector3.new(0,-1,0) end
+        if moveDir.Magnitude > 0 then moveDir = moveDir.Unit * flySpeed end
+        if flyBodyVelocity and flyBodyVelocity.Parent then flyBodyVelocity.Velocity = moveDir end
+        if flyBodyGyro and flyBodyGyro.Parent then flyBodyGyro.CFrame = cam.CFrame end
+    end)
+end
+
+local function stopFly()
+    flyEnabled = false
+    if flyConnection then flyConnection:Disconnect(); flyConnection=nil end
+    if flyBodyGyro then flyBodyGyro:Destroy(); flyBodyGyro=nil end
+    if flyBodyVelocity then flyBodyVelocity:Destroy(); flyBodyVelocity=nil end
+    if flyBodyForce then flyBodyForce:Destroy(); flyBodyForce=nil end
+    local char = player.Character
+    if char then local hum = char:FindFirstChild("Humanoid") if hum then hum.PlatformStand = false end end
+end
+
+local flyLabel = Instance.new("TextLabel")
+flyLabel.Size = UDim2.new(1,0,0,20)
+flyLabel.Position = UDim2.new(0,0,0,105)
+flyLabel.BackgroundTransparency = 1
+flyLabel.Text = "Fly: OFF | 50"
+flyLabel.TextColor3 = CurrentTheme.Subtext
+flyLabel.Font = Enum.Font.Gotham
+flyLabel.TextSize = 14
+flyLabel.TextXAlignment = Enum.TextXAlignment.Left
+flyLabel.Parent = tabContents["Main"]
+table.insert(UI_Texts, flyLabel)
+
+local flyToggle = Instance.new("TextButton")
+flyToggle.Size = UDim2.new(0.3,0,0,30)
+flyToggle.Position = UDim2.new(0,0,0,130)
+flyToggle.BackgroundColor3 = Color3.fromRGB(80,80,80)
+flyToggle.Text = "OFF"
+flyToggle.TextColor3 = Color3.fromRGB(255,255,255)
+flyToggle.Font = Enum.Font.GothamBold
+flyToggle.TextSize = 14
+flyToggle.BorderSizePixel = 0
+flyToggle.Parent = tabContents["Main"]
+Instance.new("UICorner", flyToggle).CornerRadius = UDim.new(0,6)
+
+local flySliderBg = Instance.new("Frame")
+flySliderBg.Size = UDim2.new(0.6,0,0,20)
+flySliderBg.Position = UDim2.new(0.35,0,0,135)
+flySliderBg.BackgroundColor3 = Color3.fromRGB(55,55,55)
+flySliderBg.BorderSizePixel = 0
+flySliderBg.Parent = tabContents["Main"]
+Instance.new("UICorner", flySliderBg).CornerRadius = UDim.new(0,6)
+
+local flySliderFill = Instance.new("Frame")
+flySliderFill.Size = UDim2.new(0,0,1,0)
+flySliderFill.BackgroundColor3 = Color3.fromRGB(180,130,255)
+flySliderFill.BorderSizePixel = 0
+flySliderFill.Parent = flySliderBg
+Instance.new("UICorner", flySliderFill).CornerRadius = UDim.new(0,6)
+
+local flySliderKnob = Instance.new("TextButton")
+flySliderKnob.Size = UDim2.new(0,20,0,26)
+flySliderKnob.Position = UDim2.new(0,0,0,-3)
+flySliderKnob.BackgroundColor3 = Color3.fromRGB(200,200,200)
+flySliderKnob.Text = ""
+flySliderKnob.BorderSizePixel = 0
+flySliderKnob.Parent = flySliderBg
+Instance.new("UICorner", flySliderKnob).CornerRadius = UDim.new(0,6)
+
+local function updateFlySliderDisplay()
+    local fraction = (flySpeed-20)/(200-20)
+    flySliderFill.Size = UDim2.new(fraction,0,1,0)
+    spawn(function() flySliderKnob.Position = UDim2.new(0,(flySliderBg.AbsoluteSize.X-20)*fraction,0,-3) end)
+    flyLabel.Text = "Fly: "..(flyEnabled and "ON" or "OFF").." | "..flySpeed
+end
+
+flyToggle.MouseButton1Click:Connect(function()
+    flyEnabled = not flyEnabled
+    flyToggle.Text = flyEnabled and "ON" or "OFF"
+    flyToggle.BackgroundColor3 = flyEnabled and Color3.fromRGB(90,180,90) or Color3.fromRGB(80,80,80)
+    updateFlySliderDisplay()
+    if flyEnabled then startFly() else stopFly() end
+end)
+
+updateFlySliderDisplay()
+
+-- Fullbright
+local fullbrightLabel = Instance.new("TextLabel")
+fullbrightLabel.Size = UDim2.new(1,0,0,20)
+fullbrightLabel.Position = UDim2.new(0,0,0,170)
+fullbrightLabel.BackgroundTransparency = 1
+fullbrightLabel.Text = "Fullbright: OFF"
+fullbrightLabel.TextColor3 = CurrentTheme.Subtext
+fullbrightLabel.Font = Enum.Font.Gotham
+fullbrightLabel.TextSize = 14
+fullbrightLabel.TextXAlignment = Enum.TextXAlignment.Left
+fullbrightLabel.Parent = tabContents["Main"]
+table.insert(UI_Texts, fullbrightLabel)
+
+local fullbrightToggle = Instance.new("TextButton")
+fullbrightToggle.Size = UDim2.new(0.3,0,0,30)
+fullbrightToggle.Position = UDim2.new(0,0,0,195)
+fullbrightToggle.BackgroundColor3 = Color3.fromRGB(80,80,80)
+fullbrightToggle.Text = "OFF"
+fullbrightToggle.TextColor3 = Color3.fromRGB(255,255,255)
+fullbrightToggle.Font = Enum.Font.GothamBold
+fullbrightToggle.TextSize = 14
+fullbrightToggle.BorderSizePixel = 0
+fullbrightToggle.Parent = tabContents["Main"]
+Instance.new("UICorner", fullbrightToggle).CornerRadius = UDim.new(0,6)
+
+fullbrightToggle.MouseButton1Click:Connect(function()
+    fullbrightEnabled = not fullbrightEnabled
+    fullbrightToggle.Text = fullbrightEnabled and "ON" or "OFF"
+    fullbrightToggle.BackgroundColor3 = fullbrightEnabled and Color3.fromRGB(90,180,90) or Color3.fromRGB(80,80,80)
+    fullbrightLabel.Text = "Fullbright: "..(fullbrightEnabled and "ON" or "OFF")
+    if fullbrightEnabled then
+        enableFullbright()
+    else
+        disableFullbright()
+    end
+end)
+
+-- ===================== ESP TAB =====================
+local espScroller = tabContents["ESP"]
+
+local espTitle = Instance.new("TextLabel")
+espTitle.Size = UDim2.new(1,0,0,30)
+espTitle.BackgroundTransparency = 1
+espTitle.Text = "ESP Settings"
+espTitle.TextColor3 = CurrentTheme.Text
+espTitle.Font = Enum.Font.GothamBold
+espTitle.TextSize = 20
+espTitle.LayoutOrder = 0
+espTitle.Parent = espScroller
+table.insert(UI_Texts, espTitle)
+
+-- Enable ESP
+local espEnableLabel = Instance.new("TextLabel")
+espEnableLabel.Size = UDim2.new(1,0,0,20)
+espEnableLabel.BackgroundTransparency = 1
+espEnableLabel.Text = "Enable ESP: OFF"
+espEnableLabel.TextColor3 = CurrentTheme.Subtext
+espEnableLabel.Font = Enum.Font.Gotham
+espEnableLabel.TextSize = 14
+espEnableLabel.TextXAlignment = Enum.TextXAlignment.Left
+espEnableLabel.LayoutOrder = 1
+espEnableLabel.Parent = espScroller
+table.insert(UI_Texts, espEnableLabel)
+
+local espToggle = Instance.new("TextButton")
+espToggle.Size = UDim2.new(0.3,0,0,30)
+espToggle.BackgroundColor3 = Color3.fromRGB(80,80,80)
+espToggle.Text = "OFF"
+espToggle.TextColor3 = Color3.fromRGB(255,255,255)
+espToggle.Font = Enum.Font.GothamBold
+espToggle.TextSize = 14
+espToggle.BorderSizePixel = 0
+espToggle.LayoutOrder = 2
+espToggle.Parent = espScroller
+Instance.new("UICorner", espToggle).CornerRadius = UDim.new(0,6)
+
+espToggle.MouseButton1Click:Connect(function()
+    espSettings.Enabled = not espSettings.Enabled
+    espToggle.Text = espSettings.Enabled and "ON" or "OFF"
+    espToggle.BackgroundColor3 = espSettings.Enabled and Color3.fromRGB(90,180,90) or Color3.fromRGB(80,80,80)
+    espEnableLabel.Text = "Enable ESP: "..(espSettings.Enabled and "ON" or "OFF")
+end)
+
+-- Tracers
+local tracerLabel = Instance.new("TextLabel")
+tracerLabel.Size = UDim2.new(1,0,0,20)
+tracerLabel.BackgroundTransparency = 1
+tracerLabel.Text = "Show Tracers: OFF"
+tracerLabel.TextColor3 = CurrentTheme.Subtext
+tracerLabel.Font = Enum.Font.Gotham
+tracerLabel.TextSize = 14
+tracerLabel.TextXAlignment = Enum.TextXAlignment.Left
+tracerLabel.LayoutOrder = 3
+tracerLabel.Parent = espScroller
+table.insert(UI_Texts, tracerLabel)
+
+local tracerToggle = Instance.new("TextButton")
+tracerToggle.Size = UDim2.new(0.3,0,0,30)
+tracerToggle.BackgroundColor3 = Color3.fromRGB(80,80,80)
+tracerToggle.Text = "OFF"
+tracerToggle.TextColor3 = Color3.fromRGB(255,255,255)
+tracerToggle.Font = Enum.Font.GothamBold
+tracerToggle.TextSize = 14
+tracerToggle.BorderSizePixel = 0
+tracerToggle.LayoutOrder = 4
+tracerToggle.Parent = espScroller
+Instance.new("UICorner", tracerToggle).CornerRadius = UDim.new(0,6)
+
+tracerToggle.MouseButton1Click:Connect(function()
+    espSettings.Tracers = not espSettings.Tracers
+    tracerToggle.Text = espSettings.Tracers and "ON" or "OFF"
+    tracerToggle.BackgroundColor3 = espSettings.Tracers and Color3.fromRGB(90,180,90) or Color3.fromRGB(80,80,80)
+    tracerLabel.Text = "Show Tracers: "..(espSettings.Tracers and "ON" or "OFF")
+end)
+
+-- ESP Distance slider
+local distLabel = Instance.new("TextLabel")
+distLabel.Size = UDim2.new(1,0,0,20)
+distLabel.BackgroundTransparency = 1
+distLabel.Text = "ESP Distance: 1000"
+distLabel.TextColor3 = CurrentTheme.Subtext
+distLabel.Font = Enum.Font.Gotham
+distLabel.TextSize = 14
+distLabel.TextXAlignment = Enum.TextXAlignment.Left
+distLabel.LayoutOrder = 5
+distLabel.Parent = espScroller
+table.insert(UI_Texts, distLabel)
+
+local distSliderBg = Instance.new("Frame")
+distSliderBg.Size = UDim2.new(0.6,0,0,20)
+distSliderBg.BackgroundColor3 = Color3.fromRGB(55,55,55)
+distSliderBg.BorderSizePixel = 0
+distSliderBg.LayoutOrder = 6
+distSliderBg.Parent = espScroller
+Instance.new("UICorner", distSliderBg).CornerRadius = UDim.new(0,6)
+
+local distSliderFill = Instance.new("Frame")
+distSliderFill.Size = UDim2.new(0,0,1,0)
+distSliderFill.BackgroundColor3 = Color3.fromRGB(255,200,100)
+distSliderFill.BorderSizePixel = 0
+distSliderFill.Parent = distSliderBg
+Instance.new("UICorner", distSliderFill).CornerRadius = UDim.new(0,6)
+
+local distSliderKnob = Instance.new("TextButton")
+distSliderKnob.Size = UDim2.new(0,20,0,26)
+distSliderKnob.Position = UDim2.new(0,0,0,-3)
+distSliderKnob.BackgroundColor3 = Color3.fromRGB(200,200,200)
+distSliderKnob.Text = ""
+distSliderKnob.BorderSizePixel = 0
+distSliderKnob.Parent = distSliderBg
+Instance.new("UICorner", distSliderKnob).CornerRadius = UDim.new(0,6)
+
+local function updateDistSlider(val)
+    espSettings.MaxDistance = val
+    local fraction = (val - 50) / (5000 - 50)
+    distSliderFill.Size = UDim2.new(fraction, 0, 1, 0)
+    spawn(function()
+        local barWidth = math.max(distSliderBg.AbsoluteSize.X - 20, 0)
+        distSliderKnob.Position = UDim2.new(0, barWidth * fraction, 0, -3)
+    end)
+    distLabel.Text = "ESP Distance: " .. val
+end
+
+updateDistSlider(1000)
+
+-- Ore Types section
+local oreTypesHeader = Instance.new("TextLabel")
+oreTypesHeader.Size = UDim2.new(1,0,0,25)
+oreTypesHeader.BackgroundTransparency = 1
+oreTypesHeader.Text = "Ore Types"
+oreTypesHeader.TextColor3 = CurrentTheme.Accent
+oreTypesHeader.Font = Enum.Font.GothamBold
+oreTypesHeader.TextSize = 16
+oreTypesHeader.TextXAlignment = Enum.TextXAlignment.Left
+oreTypesHeader.LayoutOrder = 7
+oreTypesHeader.Parent = espScroller
+
+for idx, oreName in ipairs(ORE_NAMES) do
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(1,0,0,36)
+    frame.BackgroundColor3 = CurrentTheme.Element
+    frame.BorderSizePixel = 0
+    frame.LayoutOrder = 8 + idx
+    frame.Parent = espScroller
+    Instance.new("UICorner", frame).CornerRadius = UDim.new(0,6)
+    table.insert(UI_Elements, frame)
+
+    local nameLabel = Instance.new("TextLabel")
+    nameLabel.Size = UDim2.new(1, -60, 1, 0)
+    nameLabel.Position = UDim2.new(0, 15, 0, 0)
+    nameLabel.BackgroundTransparency = 1
+    nameLabel.Text = oreName
+    nameLabel.TextColor3 = CurrentTheme.Text
+    nameLabel.Font = Enum.Font.Gotham
+    nameLabel.TextSize = 14
+    nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+    nameLabel.Parent = frame
+    table.insert(UI_Texts, nameLabel)
+
+    local toggle = Instance.new("TextButton")
+    toggle.Size = UDim2.new(0, 40, 0, 20)
+    toggle.Position = UDim2.new(1, -55, 0.5, -10)
+    toggle.BackgroundColor3 = Color3.fromRGB(90,180,90)
+    toggle.Text = ""
+    toggle.BorderSizePixel = 0
+    toggle.Parent = frame
+    Instance.new("UICorner", toggle).CornerRadius = UDim.new(1, 0)
+
+    local circle = Instance.new("Frame")
+    circle.Size = UDim2.new(0, 16, 0, 16)
+    circle.Position = UDim2.new(1, -18, 0.5, -8)
+    circle.BackgroundColor3 = Color3.fromRGB(255,255,255)
+    circle.BorderSizePixel = 0
+    circle.Parent = toggle
+    Instance.new("UICorner", circle).CornerRadius = UDim.new(1, 0)
+
+    local enabled = true
+    toggle.MouseButton1Click:Connect(function()
+        enabled = not enabled
+        toggle.BackgroundColor3 = enabled and Color3.fromRGB(90,180,90) or Color3.fromRGB(80,80,80)
+        circle:TweenPosition(
+            enabled and UDim2.new(1, -18, 0.5, -8) or UDim2.new(0, 2, 0.5, -8),
+            Enum.EasingDirection.Out,
+            Enum.EasingStyle.Quad,
+            0.2,
+            true
+        )
+        oreStates[oreName] = enabled
+        if not enabled then
+            for part, _ in pairs(oreAdornments) do
+                if part and part.Name == oreName then
+                    removeOreESP(part)
+                end
+            end
+        end
+    end)
+end
+
+-- ===================== TELEPORT TAB =====================
+local tpScroller = tabContents["Teleport"]
+
+local tpTitle = Instance.new("TextLabel")
+tpTitle.Size = UDim2.new(1,0,0,30)
+tpTitle.BackgroundTransparency = 1
+tpTitle.Text = "Teleport"
+tpTitle.TextColor3 = CurrentTheme.Text
+tpTitle.Font = Enum.Font.GothamBold
+tpTitle.TextSize = 20
+tpTitle.LayoutOrder = 0
+tpTitle.Parent = tpScroller
+table.insert(UI_Texts, tpTitle)
+
+local saveBtn1 = Instance.new("TextButton")
+saveBtn1.Size = UDim2.new(0.8,0,0,36)
+saveBtn1.BackgroundColor3 = CurrentTheme.Element
+saveBtn1.Text = "Save Position 1"
+saveBtn1.TextColor3 = CurrentTheme.Text
+saveBtn1.Font = Enum.Font.GothamSemibold
+saveBtn1.TextSize = 14
+saveBtn1.BorderSizePixel = 0
+saveBtn1.LayoutOrder = 1
+saveBtn1.Parent = tpScroller
+Instance.new("UICorner", saveBtn1).CornerRadius = UDim.new(0,8)
+table.insert(UI_Elements, saveBtn1)
+table.insert(UI_Texts, saveBtn1)
+
+saveBtn1.MouseButton1Click:Connect(function()
+    local char = player.Character
+    if char and char:FindFirstChild("HumanoidRootPart") then
+        savedPosition1 = char.HumanoidRootPart.CFrame
+        saveBtn1.Text = "Position 1 Saved ✓"; saveBtn1.BackgroundColor3 = Color3.fromRGB(50,150,50)
+        wait(1); saveBtn1.Text = "Save Position 1"; saveBtn1.BackgroundColor3 = CurrentTheme.Element
+    else
+        saveBtn1.Text = "No Character!"; saveBtn1.BackgroundColor3 = Color3.fromRGB(200,50,50)
+        wait(1); saveBtn1.Text = "Save Position 1"; saveBtn1.BackgroundColor3 = CurrentTheme.Element
+    end
+end)
+
+local saveBtn2 = Instance.new("TextButton")
+saveBtn2.Size = UDim2.new(0.8,0,0,36)
+saveBtn2.BackgroundColor3 = CurrentTheme.Element
+saveBtn2.Text = "Save Position 2"
+saveBtn2.TextColor3 = CurrentTheme.Text
+saveBtn2.Font = Enum.Font.GothamSemibold
+saveBtn2.TextSize = 14
+saveBtn2.BorderSizePixel = 0
+saveBtn2.LayoutOrder = 2
+saveBtn2.Parent = tpScroller
+Instance.new("UICorner", saveBtn2).CornerRadius = UDim.new(0,8)
+table.insert(UI_Elements, saveBtn2)
+table.insert(UI_Texts, saveBtn2)
+
+saveBtn2.MouseButton1Click:Connect(function()
+    local char = player.Character
+    if char and char:FindFirstChild("HumanoidRootPart") then
+        savedPosition2 = char.HumanoidRootPart.CFrame
+        saveBtn2.Text = "Position 2 Saved ✓"; saveBtn2.BackgroundColor3 = Color3.fromRGB(50,150,150)
+        wait(1); saveBtn2.Text = "Save Position 2"; saveBtn2.BackgroundColor3 = CurrentTheme.Element
+    else
+        saveBtn2.Text = "No Character!"; saveBtn2.BackgroundColor3 = Color3.fromRGB(200,50,50)
+        wait(1); saveBtn2.Text = "Save Position 2"; saveBtn2.BackgroundColor3 = CurrentTheme.Element
+    end
+end)
+
+local teleportMainBtn = Instance.new("TextButton")
+teleportMainBtn.Size = UDim2.new(0.8,0,0,36)
+teleportMainBtn.BackgroundColor3 = Color3.fromRGB(130,70,200)
+teleportMainBtn.Text = "Teleport to Saved  ▼"
+teleportMainBtn.TextColor3 = Color3.fromRGB(255,255,255)
+teleportMainBtn.Font = Enum.Font.GothamSemibold
+teleportMainBtn.TextSize = 14
+teleportMainBtn.BorderSizePixel = 0
+teleportMainBtn.LayoutOrder = 3
+teleportMainBtn.Parent = tpScroller
+Instance.new("UICorner", teleportMainBtn).CornerRadius = UDim.new(0,8)
+
+local selectionFrame = Instance.new("Frame")
+selectionFrame.Size = UDim2.new(0.8,0,0,0)
+selectionFrame.BackgroundColor3 = CurrentTheme.Element
+selectionFrame.BorderSizePixel = 0
+selectionFrame.LayoutOrder = 4
+selectionFrame.Parent = tpScroller
+Instance.new("UICorner", selectionFrame).CornerRadius = UDim.new(0,8)
+table.insert(UI_Elements, selectionFrame)
+
+local choice1 = Instance.new("TextButton")
+choice1.Size = UDim2.new(1,-12,0,34)
+choice1.Position = UDim2.new(0,6,0,6)
+choice1.BackgroundColor3 = Color3.fromRGB(70,130,70)
+choice1.Text = "Teleport to Saved 1"
+choice1.TextColor3 = Color3.fromRGB(255,255,255)
+choice1.Font = Enum.Font.Gotham
+choice1.TextSize = 14
+choice1.BorderSizePixel = 0
+choice1.Parent = selectionFrame
+Instance.new("UICorner", choice1).CornerRadius = UDim.new(0,6)
+
+local choice2 = Instance.new("TextButton")
+choice2.Size = UDim2.new(1,-12,0,34)
+choice2.Position = UDim2.new(0,6,0,44)
+choice2.BackgroundColor3 = Color3.fromRGB(70,100,130)
+choice2.Text = "Teleport to Saved 2"
+choice2.TextColor3 = Color3.fromRGB(255,255,255)
+choice2.Font = Enum.Font.Gotham
+choice2.TextSize = 14
+choice2.BorderSizePixel = 0
+choice2.Parent = selectionFrame
+Instance.new("UICorner", choice2).CornerRadius = UDim.new(0,6)
+
+local selectionVisible = false
+teleportMainBtn.MouseButton1Click:Connect(function()
+    selectionVisible = not selectionVisible
+    selectionFrame.Size = selectionVisible and UDim2.new(0.8,0,0,80) or UDim2.new(0.8,0,0,0)
+end)
+
+local function teleportToSaved(pos, btn)
+    local char = player.Character
+    if not char or not char:FindFirstChild("HumanoidRootPart") then
+        btn.Text = "No Character!"; wait(1); btn.Text = "Teleport to Saved "..(btn==choice1 and "1" or "2"); return
+    end
+    if not pos then
+        btn.Text = "Position not saved!"; wait(1); btn.Text = "Teleport to Saved "..(btn==choice1 and "1" or "2"); return
+    end
+    char.HumanoidRootPart.CFrame = pos
+    btn.Text = "Teleported! ✓"; wait(1)
+    selectionFrame.Size = UDim2.new(0.8,0,0,0); selectionVisible = false
+    btn.Text = "Teleport to Saved "..(btn==choice1 and "1" or "2")
+end
+
+choice1.MouseButton1Click:Connect(function() teleportToSaved(savedPosition1, choice1) end)
+choice2.MouseButton1Click:Connect(function() teleportToSaved(savedPosition2, choice2) end)
+
+local function addTpButton(name, order, action)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0.8,0,0,36)
+    btn.BackgroundColor3 = CurrentTheme.Element
+    btn.Text = name
+    btn.TextColor3 = CurrentTheme.Text
+    btn.Font = Enum.Font.GothamSemibold
+    btn.TextSize = 14
+    btn.BorderSizePixel = 0
+    btn.LayoutOrder = order
+    btn.Parent = tpScroller
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0,8)
+    table.insert(UI_Elements, btn)
+    table.insert(UI_Texts, btn)
+    btn.MouseButton1Click:Connect(action)
+end
+
+addTpButton("Mine", 5, function() tp(mineCoords) end)
+addTpButton("Pickaxe", 6, function() teleportToStore("Pickaxe Store") end)
+addTpButton("Backpack", 7, function() teleportToStore("Backpack Store") end)
+addTpButton("Explosive", 8, function() teleportToStore("Explosives Store") end)
+addTpButton("Prestige", 9, function() teleportToStore("Prestige Store") end)
+
+-- ===================== BINDS TAB =====================
+local bindScroller = tabContents["Binds"]
+
+local bindTitle = Instance.new("TextLabel")
+bindTitle.Size = UDim2.new(1,0,0,30)
+bindTitle.BackgroundTransparency = 1
+bindTitle.Text = "Key Binds"
+bindTitle.TextColor3 = CurrentTheme.Text
+bindTitle.Font = Enum.Font.GothamBold
+bindTitle.TextSize = 20
+bindTitle.LayoutOrder = 0
+bindTitle.Parent = bindScroller
+table.insert(UI_Texts, bindTitle)
+
+local bindData = {
+    {label = "Save Position 1", action = function() 
+        local char = player.Character
+        if char and char:FindFirstChild("HumanoidRootPart") then
+            savedPosition1 = char.HumanoidRootPart.CFrame
+        end
+    end, key = nil, keyBtn = nil},
+    {label = "Save Position 2", action = function()
+        local char = player.Character
+        if char and char:FindFirstChild("HumanoidRootPart") then
+            savedPosition2 = char.HumanoidRootPart.CFrame
+        end
+    end, key = nil, keyBtn = nil},
+    {label = "Teleport to Saved 1", action = function()
+        if savedPosition1 then
+            local char = player.Character
+            if char and char:FindFirstChild("HumanoidRootPart") then
+                char.HumanoidRootPart.CFrame = savedPosition1
+            end
+        end
+    end, key = nil, keyBtn = nil},
+    {label = "Teleport to Saved 2", action = function()
+        if savedPosition2 then
+            local char = player.Character
+            if char and char:FindFirstChild("HumanoidRootPart") then
+                char.HumanoidRootPart.CFrame = savedPosition2
+            end
+        end
+    end, key = nil, keyBtn = nil},
+}
+
+local listeningForBind = nil
+
+for i, data in ipairs(bindData) do
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(1,0,0,40)
+    frame.BackgroundColor3 = CurrentTheme.Element
+    frame.BorderSizePixel = 0
+    frame.LayoutOrder = i
+    frame.Parent = bindScroller
+    Instance.new("UICorner", frame).CornerRadius = UDim.new(0,8)
+    table.insert(UI_Elements, frame)
+
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, -100, 1, 0)
+    label.Position = UDim2.new(0, 15, 0, 0)
+    label.BackgroundTransparency = 1
+    label.Text = data.label
+    label.TextColor3 = CurrentTheme.Text
+    label.Font = Enum.Font.GothamMedium
+    label.TextSize = 14
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = frame
+    table.insert(UI_Texts, label)
+
+    local keyBtn = Instance.new("TextButton")
+    keyBtn.Size = UDim2.new(0, 70, 0, 26)
+    keyBtn.Position = UDim2.new(1, -85, 0.5, -13)
+    keyBtn.BackgroundColor3 = Color3.fromRGB(40,40,45)
+    keyBtn.Text = "None"
+    keyBtn.TextColor3 = Color3.fromRGB(200,200,200)
+    keyBtn.Font = Enum.Font.GothamBold
+    keyBtn.TextSize = 12
+    keyBtn.BorderSizePixel = 0
+    keyBtn.Parent = frame
+    Instance.new("UICorner", keyBtn).CornerRadius = UDim.new(0,6)
+    data.keyBtn = keyBtn
+
+    keyBtn.MouseButton1Click:Connect(function()
+        listeningForBind = i
+        keyBtn.Text = "..."
+    end)
+end
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+
+    if listeningForBind and input.KeyCode ~= Enum.KeyCode.Unknown then
+        local newKey = input.KeyCode.Name
+        local currentBind = bindData[listeningForBind]
+        if input.UserInputType ~= Enum.UserInputType.Keyboard then
+            listeningForBind = nil
+            if currentBind.keyBtn then
+                currentBind.keyBtn.Text = currentBind.key or "None"
+            end
+            return
+        end
+        currentBind.key = newKey
+        if currentBind.keyBtn then
+            currentBind.keyBtn.Text = newKey
+        end
+        listeningForBind = nil
+        return
+    end
+
+    for _, data in ipairs(bindData) do
+        if data.key and input.KeyCode.Name == data.key then
+            data.action()
+            break
+        end
+    end
+end)
+
+-- ===================== SETTINGS TAB =====================
+local setScroller = tabContents["Settings"]
+
+local setTitle = Instance.new("TextLabel")
+setTitle.Size = UDim2.new(1,0,0,30)
+setTitle.BackgroundTransparency = 1
+setTitle.Text = "Settings"
+setTitle.TextColor3 = CurrentTheme.Text
+setTitle.Font = Enum.Font.GothamBold
+setTitle.TextSize = 20
+setTitle.LayoutOrder = 0
+setTitle.Parent = setScroller
+table.insert(UI_Texts, setTitle)
+
+local themeHeader = Instance.new("TextLabel")
+themeHeader.Size = UDim2.new(1,0,0,25)
+themeHeader.BackgroundTransparency = 1
+themeHeader.Text = "Theme"
+themeHeader.TextColor3 = CurrentTheme.Accent
+themeHeader.Font = Enum.Font.GothamBold
+themeHeader.TextSize = 16
+themeHeader.TextXAlignment = Enum.TextXAlignment.Left
+themeHeader.LayoutOrder = 1
+themeHeader.Parent = setScroller
+
+local themeNames = {"Default", "Midnight", "Crimson", "Forest", "Amethyst", "Onyx", "Candy"}
+for i, name in ipairs(themeNames) do
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1,0,0,35)
+    btn.BackgroundColor3 = CurrentTheme.Element
+    btn.Text = name
+    btn.TextColor3 = CurrentTheme.Text
+    btn.Font = Enum.Font.GothamMedium
+    btn.TextSize = 14
+    btn.BorderSizePixel = 0
+    btn.LayoutOrder = 2 + i
+    btn.Parent = setScroller
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0,6)
+    table.insert(UI_Elements, btn)
+    table.insert(UI_Texts, btn)
+    btn.MouseButton1Click:Connect(function()
+        applyTheme(name)
+    end)
+end
+
+local otherHeader = Instance.new("TextLabel")
+otherHeader.Size = UDim2.new(1,0,0,25)
+otherHeader.BackgroundTransparency = 1
+otherHeader.Text = "Other"
+otherHeader.TextColor3 = CurrentTheme.Accent
+otherHeader.Font = Enum.Font.GothamBold
+otherHeader.TextSize = 16
+otherHeader.TextXAlignment = Enum.TextXAlignment.Left
+otherHeader.LayoutOrder = 10
+otherHeader.Parent = setScroller
+
+local copyBtn = Instance.new("TextButton")
+copyBtn.Size = UDim2.new(1,0,0,35)
+copyBtn.BackgroundColor3 = CurrentTheme.Element
+copyBtn.Text = "Copy Scriptblox Link"
+copyBtn.TextColor3 = CurrentTheme.Text
+copyBtn.Font = Enum.Font.GothamMedium
+copyBtn.TextSize = 14
+copyBtn.BorderSizePixel = 0
+copyBtn.LayoutOrder = 11
+copyBtn.Parent = setScroller
+Instance.new("UICorner", copyBtn).CornerRadius = UDim.new(0,6)
+table.insert(UI_Elements, copyBtn)
+table.insert(UI_Texts, copyBtn)
+
+copyBtn.MouseButton1Click:Connect(function()
+    local success = pcall(function()
+        setclipboard("https://scriptblox.com/u/GootHub")
+    end)
+    if success then
+        copyBtn.Text = "Copied!"
+        wait(1)
+        copyBtn.Text = "Copy Scriptblox Link"
+    else
+        copyBtn.Text = "Failed to copy"
+        wait(1)
+        copyBtn.Text = "Copy Scriptblox Link"
+    end
+end)
+
+-- ==================== SLIDER DRAGGING (connected AFTER all sliders exist) ====================
+local speedSliderDragging = false
+local flySliderDragging = false
+local distSliderDragging = false
+
+speedSliderKnob.MouseButton1Down:Connect(function() speedSliderDragging = true end)
+flySliderKnob.MouseButton1Down:Connect(function() flySliderDragging = true end)
+distSliderKnob.MouseButton1Down:Connect(function() distSliderDragging = true end)
+
+-- Click on distance slider bar
+distSliderBg.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        distSliderDragging = true
+        local barWidth = distSliderBg.AbsoluteSize.X
+        if barWidth > 0 then
+            local relX = math.clamp((input.Position.X - distSliderBg.AbsolutePosition.X) / barWidth, 0, 1)
+            local newVal = math.floor(50 + (5000 - 50) * relX + 0.5)
+            updateDistSlider(newVal)
+        end
+    end
+end)
+
+-- Single InputEnded resets all dragging flags
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = false
+        speedSliderDragging = false
+        flySliderDragging = false
+        distSliderDragging = false
+    end
+end)
+
+-- Single InputChanged handles window drag and all sliders
+UserInputService.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+        -- Window drag
+        if dragging then
+            local delta = input.Position - dragStart
+            mainFrame.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + delta.X,
+                startPos.Y.Scale, startPos.Y.Offset + delta.Y
+            )
+        end
+
+        -- Speed slider
+        if speedSliderDragging then
+            local barSizeX = speedSliderBg.AbsoluteSize.X
+            if barSizeX > 0 then
+                local fraction = math.clamp((input.Position.X - speedSliderBg.AbsolutePosition.X) / barSizeX, 0, 1)
+                speedValue = math.floor(16 + (200 - 16) * fraction + 0.5)
+                updateSpeedSliderDisplay()
+                if speedHackEnabled then applySpeed() end
+            end
+        end
+
+        -- Fly slider
+        if flySliderDragging then
+            local barSizeX = flySliderBg.AbsoluteSize.X
+            if barSizeX > 0 then
+                local fraction = math.clamp((input.Position.X - flySliderBg.AbsolutePosition.X) / barSizeX, 0, 1)
+                flySpeed = math.floor(20 + (200 - 20) * fraction + 0.5)
+                updateFlySliderDisplay()
+            end
+        end
+
+        -- ESP Distance slider
+        if distSliderDragging then
+            local barSizeX = distSliderBg.AbsoluteSize.X
+            if barSizeX > 0 then
+                local fraction = math.clamp((input.Position.X - distSliderBg.AbsolutePosition.X) / barSizeX, 0, 1)
+                local val = math.floor(50 + (5000 - 50) * fraction + 0.5)
+                updateDistSlider(val)
+            end
+        end
+    end
+end)
+
+-- Right Shift toggle (keep separate, no conflict)
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if input.KeyCode == Enum.KeyCode.RightShift then
+        mainFrame.Visible = not mainFrame.Visible
+    end
+end)
